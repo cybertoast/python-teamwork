@@ -55,7 +55,8 @@ class Teamwork(object):
         if resp.status_code == 200:
             return resp.json()
         else:
-            raise Exception(f"[{resp.status_code}] Error {resp.message} fetching from {url}")
+            breakpoint()
+            raise Exception(f"[{resp.status_code}] Error {str(resp)} fetching from {url}")
 
     def put(self, path=None, data=None):
         url = self.get_base_url()
@@ -254,10 +255,25 @@ class Teamwork(object):
     #--------------------------------------------
     def _projects_in_portfolio_board(self, board_id):
         result = self.get("/portfolio/boards/%s/columns.json" % board_id)
+        projects = []
         for column in result.get("columns"):
             result = self.get("/portfolio/columns/%s/cards.json" % column.get("id"))
             # The cards are not true projects, so let's just send the project-id from them
-            projects.extend([{"id": item.get("projectId")} for item in result.get("cards")])
+            project_ids = [card.get("projectId") for card in result.get("cards")]
+            # Fetch the projects 
+            result = self.get("/projects/api/v3/projects.json", 
+                              params={"projectIds": project_ids})
+            projects.extend(
+                [{
+                    "id": item.get("projectId"),
+                    "name": item.get("name"),
+                    "endDate": item.get("endDate"),
+                    "startDate": item.get("startDate"),
+                    "status": item.get("status")
+                 } 
+                 for item in result.get("projects")]
+            )
+        
         return projects
 
 
