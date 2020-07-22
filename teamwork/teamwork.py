@@ -39,6 +39,8 @@ class Teamwork(object):
         self.tags = None
         self.portfolio_boards = None
         self.spinner = spinning_cursor()
+        # Should the reports output include projects list?
+        self.include_projects_in_summary = False
 
     def get(self, path=None, params=None, data=None):
         url = self.get_base_url()
@@ -52,11 +54,10 @@ class Teamwork(object):
         resp = requests.get(
             url, auth=(self._api_key, ''), params=payload)
 
-        if resp.status_code == 200:
-            return resp.json()
-        else:
-            breakpoint()
-            raise Exception(f"[{resp.status_code}] Error {str(resp)} fetching from {url}")
+        assert(resp.status_code==200, 
+               f"[{resp.status_code}][{str(resp)}] Error fetching from URL: {url}")
+        
+        return resp.json()
 
     def put(self, path=None, data=None):
         url = self.get_base_url()
@@ -189,6 +190,8 @@ class Teamwork(object):
                  data={"project": { "projectOwnerId": owner_id}})
 
     def get_tasks_for_project(self, project_id):
+        assert(project_id, "Cannot retrieve tasks for undefined project-id")
+
         payload = {
             "includeCompletedTasks": True,
             "includeCompletedSubtasks": True
@@ -265,7 +268,7 @@ class Teamwork(object):
                               params={"projectIds": project_ids})
             projects.extend(
                 [{
-                    "id": item.get("projectId"),
+                    "id": item.get("id"),
                     "name": item.get("name"),
                     "endDate": item.get("endDate"),
                     "startDate": item.get("startDate"),
@@ -307,14 +310,15 @@ class Teamwork(object):
             print("Summarizing %s tasks for project %s\r" % (
                     len(tasks), tasks[0].get("project-name")), end="", file=sys.stderr)
 
-            summary["projects"].append({
-                "name": project.get("name"),
-                "id": project.get("id"),
-                "startDate": project.get("startDate"),
-                "endDate": project.get("endDate"),
-                "status": project.get("status"),
-                "subStatus": project.get("subStatus"),
-            })
+            if self.include_projects_in_summary:
+                summary["projects"].append({
+                    "name": project.get("name"),
+                    "id": project.get("id"),
+                    "startDate": project.get("startDate"),
+                    "endDate": project.get("endDate"),
+                    "status": project.get("status"),
+                    "subStatus": project.get("subStatus"),
+                })
 
             for task in tasks:
                 if task.get("start-date"):
