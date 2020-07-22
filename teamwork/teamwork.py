@@ -6,10 +6,25 @@ import sys
 import time
 import re
 
+
+# Helper Functions
 def spinning_cursor():
     while True:
         for cursor in '|/-\\':
             yield cursor
+
+def timedelta_to_hours_minutes(td):
+    return td.seconds // 3600, (td.seconds // 60) % 60
+
+
+def time_to_hhmm(time_input):
+    return '%i:%i' % (time_input.hour, time_input.minute)
+
+
+class User(object):
+    def __init__(self, id):
+        self.id = id
+
 
 class Teamwork(object):
     """
@@ -34,10 +49,13 @@ class Teamwork(object):
         if params:
             payload = params
 
-        request = requests.get(
+        resp = requests.get(
             url, auth=(self._api_key, ''), params=payload)
 
-        return request.json()
+        if resp.status_code == 200:
+            return resp.json()
+        else:
+            raise Exception(f"[{resp.status_code}] Error {resp.message} fetching from {url}")
 
     def put(self, path=None, data=None):
         url = self.get_base_url()
@@ -169,9 +187,6 @@ class Teamwork(object):
         self.put('/projects/%i.json' % project_id, 
                  data={"project": { "projectOwnerId": owner_id}})
 
-    def get_tasks():
-        pass
-
     def get_tasks_for_project(self, project_id):
         payload = {
             "includeCompletedTasks": True,
@@ -188,94 +203,63 @@ class Teamwork(object):
     def create_project(self, data):
         result = self.post('projects.json', data=data)
 
-    def get_project_progress(self, project_id):
-        """
-        Return the total project progress as a Json object 
-        for plotting into a gantt chart
-        """
-        pass
-
-    def _portfolio_by_name(self, portfolio_name: str):
-        if not self.portfolio_boards:
-            result = self.get("portfolio/boards.json")
-            portfolio_boards = result.get("boards")
-        
-        self.portfolio_boards = portfolio_boards
-        if self.portfolio_boards:
-            portfolio = [item for item in self.portfolio_boards if item.get("name") == portfolio_name]
-
-        if portfolio:
-            return portfolio[0]
-
-    def _tag_by_name(self, tag_name: str):
-        """
-        Get tag-id from the provided name
-
-        Args:
-            tag_name (str): [description]
-        """
-        if not self.tags:
-            result = self.get("tags.json")
-            tags = result.get("tags")
-
-        self.tags = tags
-        if self.tags:
-            tagIds = [item for item in self.tags if item["name"] == tag_name]
-            if tagIds:
-                tagId = tagIds[0]
-        
-        return tagId
-        
-    def get_summary_for_tag(self, tag_name: str):
+    def get_summary_for_tags(self, tag_names=[]):
         """
         Get summary of tasks, progress, and estimates by tag value
 
         * Get list of projects matching a tag
         * For each project get project summary
 
-        :param tag: Tag name
+        :param tags: list of tag names
         :returns: object containing summary
-
-        Return object looks like:
-        {
-            "tag": "name",
-            "startDate": 20200101,   # start date of earliest project under tag
-            "endDate": 20210101,     # last date of all projects under tag
-            "tasks": {
-                "active": N,         # total number of active tasks
-                "complete": N,       # total number of completed tasks
-                "late": N,           # total number of late tasks
-                "progress: N%,       # Sum of all progress
-                "mins-estimated": N, # Sum of estimated minutes
-            }
-            projects: [],            # List of projects under this tag
-        }
         """
-        tag = self._tag_by_name(tag_name) 
-        projects = self.get_projects(payload={"projectTagIds" : [tag.get("id")]})
-
-        summary = self._summarize_projects(projects)
-        return summary
+        tags = self._tags_by_name(tag_names) 
+        tag_summaries = []
+        for tag in tags:
+            tag_summary = {}
+            tag_summary["name"] = tag.get("name")
+            tag_summary["name"] = tag.get("id")
+            projects = self.get_projects(
+                payload={"projectTagIds" : [tag.get("id") for tag in tags]}
+            )
+            projects_summary = self._summarize_projects(projects)
+            tag_summary["summary"] = projects_summary
+            tag_summaries.append(tag_summary)
+        return tag_summaries
     
-    def get_summary_for_portfolio(self, portfolio_name: str):
+    def get_summary_for_portfolios(self, portfolios):
         """
         Fetch the project summary for a portfolio-name
 
-        Args:
-            portfolio (str): [description]
+        :param portfolio_name: Either full or regex name of the portfolio
+        :returns Summary Object
         """
         # Get the portfolio id
-        projects = []
-        board = self._portfolio_by_name(portfolio_name)
-        result = self.get("/portfolio/boards/%s/columns.json" % board.get("id"))
+        boards = self._portfolios_by_name(portfolios)
+        board_summaries = []
 
+        for board in boards:
+            board_summary = {}
+            board_summary["name"] = board.get("name")
+            board_summary["id"] = board.get("id")
+            projects = self._projects_in_portfolio_board(board.get("id")) 
+            projects_summary = self._summarize_projects(projects)
+            board_summary["summary"] = projects_summary
+            board_summaries.append(board_summary)
+
+        return board_summaries
+
+    #--------------------------------------------
+    # Internal / Private methods
+    #--------------------------------------------
+    def _projects_in_portfolio_board(self, board_id):
+        result = self.get("/portfolio/boards/%s/columns.json" % board_id)
         for column in result.get("columns"):
             result = self.get("/portfolio/columns/%s/cards.json" % column.get("id"))
             # The cards are not true projects, so let's just send the project-id from them
             projects.extend([{"id": item.get("projectId")} for item in result.get("cards")])
+        return projects
 
-        summary = self._summarize_projects(projects)
-        return summary
 
     def _summarize_projects(self, projects):
         today = int("%04d%02d%02d" % (datetime.today().year, 
@@ -295,6 +279,7 @@ class Teamwork(object):
             "late": 0,          # calculated
             "projects": []
         }
+
         for project in projects:
             # Get all the tasks on the project to get totals
             tasks = self.get_tasks_for_project(project.get("id"))
@@ -335,8 +320,8 @@ class Teamwork(object):
                 else:
                     summary["active"] += 1
                         
-                summary["progress"] += task.get("progress", 0)
-                summary["estimated-minutes"] += task.get("estimated-minutes", 0)
+                summary["progress"] += int(task.get("progress", 0))
+                summary["estimated-minutes"] += int(task.get("estimated-minutes", 0))
 
                 sys.stderr.write(next(self.spinner))
                 sys.stderr.flush()
@@ -348,14 +333,53 @@ class Teamwork(object):
 
         return summary
 
-def timedelta_to_hours_minutes(td):
-    return td.seconds // 3600, (td.seconds // 60) % 60
+    def _portfolios_by_name(self, portfolios):
+        """
+        Get list of portfolio boards matching a provided string
 
+        Parameters
+        ----------
+        portfolios : list of names to match
 
-def time_to_hhmm(time_input):
-    return '%i:%i' % (time_input.hour, time_input.minute)
+        Returns
+        -------
+        list of boards
 
+        """
+        if not self.portfolio_boards:
+            result = self.get("portfolio/boards.json")
+            portfolio_boards = result.get("boards")
+        
+        self.portfolio_boards = portfolio_boards
+        boards = []
+        if self.portfolio_boards:
+            boards = [item for item in self.portfolio_boards 
+                        for portfolio_name in portfolios 
+                        if re.match(portfolio_name, item.get("name"), re.I)] 
 
-class User(object):
-    def __init__(self, id):
-        self.id = id
+        return boards
+
+    def _tags_by_name(self, tagnames):
+        """[summary]
+
+        Parameters
+        ----------
+        tagnames : list of str
+            List of tags that we need to get information on
+
+        Returns
+        -------
+        list of tags with name and id
+        """
+        if not self.tags:
+            result = self.get("tags.json")
+            tags = result.get("tags")
+
+        self.tags = tags
+        tagIds = []
+        if self.tags:
+            tagIds = [item for item in self.tags for tag_name in tagnames 
+                        if re.match(tag_name, item["name"], re.I)]
+
+        return tagIds
+
