@@ -66,8 +66,12 @@ def save_to_gsheet(summary, credentials_file, config):
     # The file token.pickle stores the user's access and refresh tokens, and is
     # created automatically when the authorization flow completes for the first
     # time.
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
+
+    # The pickle file should be in the same folder as the credentials file
+    credpath = os.path.split(credentials_file)[0]
+    tokenfile = os.path.join(credpath, 'token.pickle')
+    if os.path.exists(tokenfile):
+        with open(tokenfile, 'rb') as token:
             creds = pickle.load(token)
     # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
