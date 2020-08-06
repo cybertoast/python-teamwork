@@ -1,10 +1,11 @@
 import requests
 import json
 from datetime import datetime
-
 import sys
 import time
 import re
+import logging
+import arrow
 
 
 # Helper Functions
@@ -32,6 +33,10 @@ class Teamwork(object):
     Based on Teamwork API: http://developer.teamwork.com/
     """
     def __init__(self, domain, api_key):
+        self._init_vars(domain, api_key)
+        self._init_logger()
+
+    def _init_vars(self, domain, api_key):
         self._domain = domain
         self._api_key = api_key
         self._account = self.authenticate()
@@ -41,8 +46,22 @@ class Teamwork(object):
         self.spinner = spinning_cursor()
         # Should the reports output include projects list?
         self.include_projects_in_summary = False
+        self.output_format = "json"
 
-    def get(self, path=None, params=None, data=None):
+    def _init_logger(self):
+        # This can be overridden by the caller
+        # Console Handler for logger.
+        ch = logging.StreamHandler(sys.stderr)
+        formatter = logging.Formatter(
+            '[%(asctime)s][%(levelname)s][%(filename)s:%(funcName)s] %(message)s')
+        ch.setFormatter(formatter)
+
+        self.logger = logging.getLogger()
+        self.logger.setLevel(logging.WARNING)
+        self.logger.addHandler(ch)
+        self.logger.info("Logger initialized")
+
+    def get(self, path=None, params=None):
         url = self.get_base_url()
         if path:
             url = "%s/%s" % (url, path)
@@ -54,8 +73,7 @@ class Teamwork(object):
         resp = requests.get(
             url, auth=(self._api_key, ''), params=payload)
 
-        assert(resp.status_code==200, 
-               f"[{resp.status_code}][{str(resp)}] Error fetching from URL: {url}")
+        assert resp.status_code==200, f"[{resp.status_code}][{str(resp)}] Error fetching from URL: {url}"
         
         return resp.json()
 
@@ -93,6 +111,8 @@ class Teamwork(object):
         return result.get('account')
 
     def get_projects(self, payload={}):
+        if ("includeProjectOwner") not in payload.keys():
+            payload["includeProjectOwner"] = True
         result = self.get('projects.json', params=payload)
         return result.get('projects')
     
@@ -189,8 +209,96 @@ class Teamwork(object):
         self.put('/projects/%i.json' % project_id, 
                  data={"project": { "projectOwnerId": owner_id}})
 
+    def get_tasks(self, include_portfolios=False):
+        """Get all tasks across all projects
+
+        Parameters
+        ----------
+        include_portfolios : bool, optional
+            whether to add the portfolio association into the projects, as a list. 
+            By default False.
+
+        Returns
+        -------
+        List of Bbjects
+            Returns JSON object of all the tasks
+            
+        """
+        tasks = []
+        page = 0
+        while True:
+            page += 1
+            # We want to keep looping until there are no more tasks, since
+            # the tasks api returns 250 at a time paginated 
+            payload = {
+                "includeCompletedTasks": True,
+                "includeCompletedSubtasks": True,
+                "getSubTasks": "no",
+                "page": page, "pageSize": 250
+            }
+            result = self.get('tasks.json', params=payload)
+            tasks_page = result.get("todo-items")
+            if not tasks_page or len(tasks_page) == 0:
+                # No more tasks to fetch
+                break
+            tasks.extend(tasks_page)
+
+        if include_portfolios:
+            projects = self.get_projects(payload={"include": ["portfolioBoards"]})
+        
+            for task in tasks:
+                # Get the project for this task and add in the portfolioBaords
+                # TODO: Why the F is project.id a str and task.project-id an int?! 
+                # TODO: Notify Teamwork of this inconsistency
+                project = next((project for project in projects 
+                                if project.get("id") == str(task.get("project-id"))), None)
+                task["portfolioBoards"] = project.get("portfolioBoards")
+                task["project-start-date"] = project.get("startDate")
+                task["project-status"] = project.get("startDate")
+                task["project-end-date"] = project.get("endDate")
+                task["project-owner"] = project.get("owner")
+
+        if self.output_format == "json":
+            return tasks
+        
+        elif self.output_format in ["gsheet", "csv"]:
+            headers = [
+                "id", "content", "status", "completed", "start-date", "due-date", 
+                "progress", "estimated-minutes", 
+                "creator-firstname", "creator-lastname", "project-id", "project-name", "project-owner", "project-start-date", "project-end-date", 
+                "responsible-party-names",
+                "portfolioBoards"
+            ]
+            csv_out = []
+            csv_out.append(headers)
+            for task in tasks:
+                row = []
+                for header in headers:
+                    if header == "portfolioBoards":
+                        cell = ",".join([pboard.get("board").get("name") for pboard in task.get(header)])
+                    elif header == "project-owner":
+                        if task.get(header):
+                            cell = task.get(header, {}).get("fullName")
+                    else:
+                        cell = task.get(header)
+                    row.append(cell)
+                csv_out.append(row)
+            
+            return csv_out
+
+    def get_portfolios():
+        payload = {
+            "includeCompletedTasks": True,
+            "includeCompletedSubtasks": True,
+            "getSubTasks": "no",
+        }
+        result = self.get("portfolio/boards.json")
+        portfolio_boards = result.get("boards", params=payload)
+        
+        return portfolio_boards
+
     def get_tasks_for_project(self, project_id):
-        assert(project_id, "Cannot retrieve tasks for undefined project-id")
+        assert project_id, "Cannot retrieve tasks for undefined project-id"
 
         payload = {
             "includeCompletedTasks": True,
@@ -217,18 +325,24 @@ class Teamwork(object):
         :param tags: list of tag names
         :returns: object containing summary
         """
+
         tags = self._tags_by_name(tag_names) 
         tag_summaries = []
+
+        sys.stderr.write("\033[K") # Clear to the end of line
+        self.logger.info("Summarizing %s tags\r" % (len(tags)), end="", file=sys.stderr)
+
         for tag in tags:
             tag_summary = {}
             tag_summary["name"] = tag.get("name")
             tag_summary["name"] = tag.get("id")
             projects = self.get_projects(
-                payload={"projectTagIds" : [tag.get("id") for tag in tags]}
+                payload={"projectTagIds" : ",".join([tag.get("id") for tag in tags])}
             )
             projects_summary = self._summarize_projects(projects)
             tag_summary["summary"] = projects_summary
             tag_summaries.append(tag_summary)
+
         return tag_summaries
     
     def get_summary_for_portfolios(self, portfolios):
@@ -240,16 +354,35 @@ class Teamwork(object):
         """
         # Get the portfolio id
         boards = self._portfolios_by_name(portfolios)
-        board_summaries = []
+        self.logger.info("Summarizing %s Portfolio Boards\r" % (len(boards)))
 
+        board_summaries = []
+        summary_fields = [
+            "id", "name",
+            # The remaining fields come from the _summarize_projects() method
+            "start-date", "due-date", "progress",
+            "progress-percent", "estimated-minutes", "tasks", 
+            "completed", "completed-percent", "active", "late"
+        ]
+
+        if self.output_format in ["gsheet", "csv"]:
+            # Add the header row
+            board_summaries.append(summary_fields) 
+            
         for board in boards:
-            board_summary = {}
-            board_summary["name"] = board.get("name")
-            board_summary["id"] = board.get("id")
             projects = self._projects_in_portfolio_board(board.get("id")) 
             projects_summary = self._summarize_projects(projects)
-            board_summary["summary"] = projects_summary
-            board_summaries.append(board_summary)
+
+            if self.output_format == "json":
+                board_summary = {}
+                board_summary["name"] = board.get("name")
+                board_summary["id"] = board.get("id")
+                board_summary["summary"] = projects_summary
+                board_summaries.append(board_summary)
+            elif self.output_format in  ["csv", "gsheet"]:
+                projects_values = [projects_summary.get(fieldname) for fieldname in summary_fields[2:]]
+                projects_values = [board.get("id"), board.get("name")] + projects_values
+                board_summaries.append(projects_values) 
 
         return board_summaries
 
@@ -263,9 +396,14 @@ class Teamwork(object):
             result = self.get("/portfolio/columns/%s/cards.json" % column.get("id"))
             # The cards are not true projects, so let's just send the project-id from them
             project_ids = [card.get("projectId") for card in result.get("cards")]
+            if not project_ids:
+                # Don't process blank project-id's since otherwise
+                # the projects list below will fetch all projects
+                continue
+
             # Fetch the projects 
             result = self.get("/projects/api/v3/projects.json", 
-                              params={"projectIds": project_ids})
+                              params={"projectIds": ",".join(project_ids)})
             projects.extend(
                 [{
                     "id": item.get("id"),
@@ -281,10 +419,6 @@ class Teamwork(object):
 
 
     def _summarize_projects(self, projects):
-        today = int("%04d%02d%02d" % (datetime.today().year, 
-                    datetime.today().month, 
-                    datetime.today().day))
-
         summary = {
             "start-date": None,
             "due-date": None,
@@ -300,58 +434,72 @@ class Teamwork(object):
         }
 
         for project in projects:
-            # Get all the tasks on the project to get totals
-            tasks = self.get_tasks_for_project(project.get("id"))
-            summary["tasks"] += len(tasks)
-            # No need to process empty projects
-            if not len(tasks): continue
-
-            sys.stderr.write("\033[K") # Clear to the end of line
-            print("Summarizing %s tasks for project %s\r" % (
-                    len(tasks), tasks[0].get("project-name")), end="", file=sys.stderr)
-
-            if self.include_projects_in_summary:
-                summary["projects"].append({
-                    "name": project.get("name"),
-                    "id": project.get("id"),
-                    "startDate": project.get("startDate"),
-                    "endDate": project.get("endDate"),
-                    "status": project.get("status"),
-                    "subStatus": project.get("subStatus"),
-                })
-
-            for task in tasks:
-                if task.get("start-date"):
-                    if not summary.get("start-date"):
-                        summary["start-date"] = task.get("start-date") 
-                    if task.get("start-date") < summary.get("start-date"):
-                        summary["start-date"] = task.get("start-date") 
-
-                if task.get("due-date"):
-                    if not summary.get("due-date"):
-                        summary["due-date"] = task.get("due-date") 
-                    if task.get("due-date") > summary.get("due-date"):
-                        summary["due-date"] = task.get("due-date") 
-                    
-                if summary.get("due-date") and int(summary.get("due-date")) < today:
-                    summary["late"] += 1
-                if task.get("status").startswith("complete") or task.get("completed") or task.get("progress") == 100:
-                    summary["completed"] += 1
-                else:
-                    summary["active"] += 1
-                        
-                summary["progress"] += int(task.get("progress", 0))
-                summary["estimated-minutes"] += int(task.get("estimated-minutes", 0))
-
-                sys.stderr.write(next(self.spinner))
-                sys.stderr.flush()
-                sys.stderr.write('\b')
+            self._summarize_project(project, summary)
+            self.logger.warn("Due-date: %s" % summary.get("due-date"))
 
         if summary["tasks"]:
             summary["progress-percent"] = summary["progress"] / (summary["tasks"] * 100)
             summary["completed-percent"] = summary["completed"] / (summary["tasks"])
 
+        # Format the datetime fields
+        if summary.get("start-date"): 
+            summary["start-date"] = arrow.get(summary.get("start-date"), "YYYYMMDD").date()
+        if summary.get("due-date"): 
+            summary["due-date"] = arrow.get(summary.get("due-date"), "YYYYMMDD").date()
+
         return summary
+    
+    def _summarize_project(self, project, summary):
+        tasks = self.get_tasks_for_project(project.get("id"))
+        # No need to process empty projects
+        if not len(tasks): return
+        summary["tasks"] += len(tasks)
+
+        self.logger.info("Summarizing %s tasks for project %s\r" % (
+                len(tasks), tasks[0].get("project-name"))
+        )
+
+        if self.include_projects_in_summary and self.output_format == "json":
+            # We don't want the projects details in CSV outputs
+            summary["projects"].append({
+                "name": project.get("name"),
+                "id": project.get("id"),
+                "startDate": project.get("startDate"),
+                "endDate": project.get("endDate"),
+                "status": project.get("status"),
+                "subStatus": project.get("subStatus"),
+            })
+
+        today = int("%04d%02d%02d" % (datetime.today().year, 
+                    datetime.today().month, 
+                    datetime.today().day))
+
+        for task in tasks:
+            if task.get("start-date"):
+                if not summary.get("start-date"):
+                    summary["start-date"] = task.get("start-date") 
+                if task.get("start-date") < summary.get("start-date"):
+                    summary["start-date"] = task.get("start-date") 
+
+            if task.get("due-date"):
+                if not summary.get("due-date"):
+                    summary["due-date"] = task.get("due-date")
+                if task.get("due-date") > summary.get("due-date"):
+                    summary["due-date"] = task.get("due-date") 
+                
+            if summary.get("due-date") and int(summary.get("due-date")) < today:
+                summary["late"] += 1
+            if task.get("status").startswith("complete") or task.get("completed") or task.get("progress") == 100:
+                summary["completed"] += 1
+            else:
+                summary["active"] += 1
+                    
+            summary["progress"] += int(task.get("progress", 0))
+            summary["estimated-minutes"] += int(task.get("estimated-minutes", 0))
+
+            if str(summary["due-date"]).startswith("2024"): 
+                breakpoint()
+            self.logger.warn("Due-date: %s" % summary.get("due-date"))
 
     def _portfolios_by_name(self, portfolios):
         """
