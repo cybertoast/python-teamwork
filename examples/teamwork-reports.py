@@ -116,8 +116,8 @@ def write_data_to_gsheet(service, values, config):
 @click.option('--format', help="Output format", default="json",
               type=click.Choice(['json', 'csv', 'gsheet'], 
               case_sensitive=False))
-@click.option('--credentials_file', help="Google credentials.json path") 
-@click.option('--config_file', 
+@click.option('--credentials-file', help="Google credentials.json path") 
+@click.option('--config-file', 
               help=("Path to configuration file. See the config.json.sample file "
                     "in this repo for example structure"), 
               required=True, type=click.File("r")) 
