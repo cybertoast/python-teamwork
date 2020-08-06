@@ -67,7 +67,7 @@ def save_to_gsheet(summary, credentials_file):
     # created automatically when the authorization flow completes for the first
     # time.
     if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as TEAMWORK_TOKEN:
+        with open('token.pickle', 'rb') as token:
             creds = pickle.load(token)
     # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
