@@ -61,7 +61,7 @@ def test_update_task(tw):
     tw.update_task(task_id=17041155, data={"due-date": 20210315})
 
 
-def save_to_gsheet(summary, credentials_file):
+def save_to_gsheet(summary, credentials_file, config):
     creds = None
     # The file token.pickle stores the user's access and refresh tokens, and is
     # created automatically when the authorization flow completes for the first
@@ -75,34 +75,16 @@ def save_to_gsheet(summary, credentials_file):
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                credentials_file, SCOPES)
+                credentials_file, config.get("SCOPES"))
             creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
         with open('token.pickle', 'wb') as token:
             pickle.dump(creds, token)
 
     service = build('sheets', 'v4', credentials=creds)
-    write_data_to_gsheet(service, summary)
+    write_data_to_gsheet(service, summary, config)
 
-
-def get_data_from_gsheet(service):
-    # Call the Sheets API
-    sheet = service.spreadsheets()
-    
-    result = sheet.values().get(spreadsheetId=SPREADSHEET_ID,
-                                range=RANGE_NAME).execute()
-    values = result.get('values', [])
-
-    if not values:
-        print('No data found.')
-    else:
-        print('Name, Major:')
-        for row in values:
-            # Print columns A and E, which correspond to indices 0 and 4.
-            print('%s, %s' % (row[0], row[4]))
-
-
-def write_data_to_gsheet(service, values):
+def write_data_to_gsheet(service, values, config):
     # Update the data
     body = {
         'values': values
@@ -111,7 +93,8 @@ def write_data_to_gsheet(service, values):
     value_input_option = "USER_ENTERED"
     result = service.spreadsheets().values(
     ).update( 
-        spreadsheetId=SPREADSHEET_ID, range=RANGE_NAME, 
+        spreadsheetId=config.get("SPREADSHEET_ID"), 
+        range=config.get("RANGE_NAME"), 
         valueInputOption=value_input_option, body=body
     ).execute()
 
@@ -175,7 +158,7 @@ def main(all_tasks, all_projects,
         writer = csv.writer(saveto)
         writer.writerows(summary)
     elif format == "gsheet":
-        save_to_gsheet(summary, credentials_file)
+        save_to_gsheet(summary, credentials_file, config)
 
 
 if __name__ == "__main__":
