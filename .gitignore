@@ -13,3 +13,9 @@
 .DS_Store
 .vscode
 examples/config.json
+
+# Ignore configuration and credentials files
+config.json
+credentials.json
+google.credentials.json
+token.pickle
