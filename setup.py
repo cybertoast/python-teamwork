@@ -6,7 +6,7 @@ def readme():
         return f.read()
 
 setup(name='python-teamwork',
-      version='0.1.3',
+      version='0.2.0',
       description='Python Wrapper for Teamwork API',
       long_description=readme(),
       url='https://github.com/swappsco/python-teamwork',
@@ -15,7 +15,8 @@ setup(name='python-teamwork',
       license='MIT',
       packages=['teamwork'],
       install_requires=[
-          'requests',
+          'requests', 'arrow', 
+          'click', # necessary for running the examples
       ],
       test_suite='nose.collector',
       tests_require=['nose'],

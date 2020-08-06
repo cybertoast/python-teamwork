@@ -1,6 +1,5 @@
 import requests
 import json
-from datetime import datetime
 import sys
 import time
 import re
@@ -470,9 +469,10 @@ class Teamwork(object):
                 "subStatus": project.get("subStatus"),
             })
 
-        today = int("%04d%02d%02d" % (datetime.today().year, 
-                    datetime.today().month, 
-                    datetime.today().day))
+        today = int("%04d%02d%02d" % (
+                    arrow.now().year, 
+                    arrow.now().month, 
+                    arrow.now().day))
 
         for task in tasks:
             if task.get("start-date"):

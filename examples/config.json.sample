@@ -1,0 +1,8 @@
+{
+    "TEAMWORK_API_KEY": "twp_****",
+    "TEAMWORK_DOMAIN": "your-domain.teamwork.com",
+    "TEAMWORK_COMPANY_ID": 999999999999,
+    "SCOPES": ["https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/spreadsheets"],
+    "SPREADSHEET_ID": "some-spreadsheet-it",
+    "RANGE_NAME": "TWTasks!A1:Q10000"
+}
